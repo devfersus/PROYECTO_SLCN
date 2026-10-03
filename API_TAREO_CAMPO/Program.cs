@@ -1,0 +1,144 @@
+using API_TAREO_CAMPO.Converters;
+using API_TAREO_CAMPO.Controllers.Core.Ajuste_.Scoped;
+using API_TAREO_CAMPO.Controllers.Core.TareoCosecha_.Scoped;
+using API_TAREO_CAMPO.Controllers.Core.Compra_.Scoped;
+using API_TAREO_CAMPO.Controllers.Core.Kardex_.Scoped;
+using API_TAREO_CAMPO.Controllers.Core.Salida_.Scoped;
+using API_TAREO_CAMPO.Controllers.Core.Stock_.Scoped;
+using API_TAREO_CAMPO.Controllers.Maestro.Almacen_.Scoped;
+using API_TAREO_CAMPO.Controllers.Maestro.Categoria_.Scoped;
+using API_TAREO_CAMPO.Controllers.Maestro.Pais_.Scoped;
+using API_TAREO_CAMPO.Controllers.Maestro.Producto_.Scoped;
+using API_TAREO_CAMPO.Controllers.Maestro.UnidadMedida_.Scoped;
+using API_TAREO_CAMPO.Controllers.Seguridad.Login.CasosUso.Auth.Scoped;
+using API_TAREO_CAMPO.Controllers.Seguridad.Navegacion_.Scoped;
+using API_TAREO_CAMPO.Filters;
+using API_TAREO_CAMPO.Middleware;
+using API_TAREO_CAMPO.Services;
+using CORE.Infraestructura;
+using MAESTRO.Infraestructura;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Scalar.AspNetCore;
+using SEGURIDAD.Infraestructura;
+using StackExchange.Redis;
+using System.Text;
+
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers()
+    .AddJsonOptions(opt =>
+    {
+        opt.JsonSerializerOptions.Converters.Add(new FlexibleDateTimeConverter());
+        opt.JsonSerializerOptions.Converters.Add(new FlexibleNullableDateTimeConverter());
+    });
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+builder.Services.AddExceptionHandler<DomainExceptionHandler>();
+builder.Services.AddProblemDetails();
+
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<AuditSaveChangesInterceptor>();
+builder.Services.AddDbContextFactory<AuditoriaDBContext>(opt =>
+    opt.UseNpgsql(builder.Configuration.GetConnectionString("SeguridadDb")));
+
+builder.Services.AddDbContext<SeguridadDBContext>((sp, opt) =>
+{
+    opt.UseNpgsql(builder.Configuration.GetConnectionString("SeguridadDb"));
+    opt.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
+});
+
+builder.Services.AddDbContext<MaestroDBContext>((sp, opt) =>
+{
+    opt.UseNpgsql(builder.Configuration.GetConnectionString("SeguridadDb"));
+    opt.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
+});
+
+builder.Services.AddDbContext<CoreDBContext>((sp, opt) =>
+{
+    opt.UseNpgsql(builder.Configuration.GetConnectionString("SeguridadDb"));
+    opt.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
+});
+
+builder.Services.AddSingleton<IConnectionMultiplexer>(
+    _ => ConnectionMultiplexer.Connect(
+        builder.Configuration.GetConnectionString("Redis")!)
+ );
+
+builder.Services.AgregarModuloLogin();
+builder.Services.AgregarModuloNavegacion();
+builder.Services.AgregarModuloPais();
+builder.Services.AgregarModuloCategoria();
+builder.Services.AgregarModuloProducto();
+builder.Services.AgregarModuloUnidadMedida();
+builder.Services.AgregarModuloAlmacen();
+builder.Services.AgregarModuloCompra();
+builder.Services.AgregarModuloSalida();
+builder.Services.AgregarModuloStock();
+builder.Services.AgregarModuloKardex();
+builder.Services.AgregarModuloAjuste();
+builder.Services.AgregarModuloTareoCosecha();
+
+builder.Services.AddSingleton<IRequestGuard, RedisRequestGuard>();
+builder.Services.AddScoped<EmailRequestGuardFilter>();
+
+var jwtCfg = builder.Configuration.GetSection("Jwt");
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(opt =>
+    {
+        opt.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer           = true,
+            ValidateAudience         = true,
+            ValidateLifetime         = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer              = jwtCfg["Issuer"],
+            ValidAudience            = jwtCfg["Audience"],
+            IssuerSigningKey         = new SymmetricSecurityKey(
+                                           Encoding.UTF8.GetBytes(jwtCfg["SecretKey"]!))
+        };
+    });
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
+var app = builder.Build();
+
+//using (var scope = app.Services.CreateScope())
+//{
+//    var seguridadDb = scope.ServiceProvider.GetRequiredService<SeguridadDBContext>();
+//    seguridadDb.Database.Migrate();
+
+//    var paisDb = scope.ServiceProvider.GetRequiredService<PaisDBContext>();
+//    paisDb.Database.Migrate();
+//}
+
+app.UseSwagger();
+app.MapScalarApiReference(options =>
+    options.WithOpenApiRoutePattern("/swagger/v1/swagger.json"));
+
+app.UseExceptionHandler();
+app.UseCors("AllowAll");
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
+app.UseAuthentication();
+app.UseMiddleware<TokenCacheValidationMiddleware>();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
